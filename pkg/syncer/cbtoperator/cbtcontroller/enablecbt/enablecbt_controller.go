@@ -153,6 +153,8 @@ func (r *ReconcileEnableCBT) enableCBTForNamespace(ctx context.Context, instance
 		return reconcile.Result{RequeueAfter: time.Second * 5}, nil
 	}
 
+	reconcileLog.Infof("Found %d PVCs without label cbt=true in namespace: %q", len(pvcList.Items), instance.Namespace)
+
 	// 2. Find unattached PVCs
 	// Get all VolumeAttachments to efficiently check if attached
 	attachedPVs, err := r.getAttachedPVs(ctx)
@@ -161,10 +163,6 @@ func (r *ReconcileEnableCBT) enableCBTForNamespace(ctx context.Context, instance
 	}
 
 	for _, pvc := range pvcList.Items {
-		if pvc.Spec.VolumeMode == nil || *pvc.Spec.VolumeMode != v1.PersistentVolumeBlock {
-			continue // Not a block volume
-		}
-
 		if pvc.Spec.VolumeName == "" {
 			continue // Unbound PVC
 		}
@@ -183,6 +181,10 @@ func (r *ReconcileEnableCBT) enableCBTForNamespace(ctx context.Context, instance
 
 		if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != common.VSphereCSIDriverName {
 			continue
+		}
+
+		if pv.Spec.CSI.VolumeAttributes == nil || pv.Spec.CSI.VolumeAttributes[common.AttributeDiskType] != common.DiskTypeBlockVolume {
+			continue // Not a vSphere CNS block volume
 		}
 
 		volumeID := pv.Spec.CSI.VolumeHandle
@@ -216,8 +218,8 @@ func (r *ReconcileEnableCBT) enableCBTForNamespace(ctx context.Context, instance
 func (r *ReconcileEnableCBT) disableCBTForNamespace(ctx context.Context, instance *cnsdpv1alpha1.EnableCBT) (reconcile.Result, error) {
 	reconcileLog := logger.GetLogger(ctx)
 
-	// 1. List all PVCs in the namespace without label cbt=true
-	labelSelector, err := labels.Parse("cbt!=true")
+	// 1. List all PVCs in the namespace with label cbt=true
+	labelSelector, err := labels.Parse("cbt=true")
 	if err != nil {
 		reconcileLog.Errorf("Failed to parse label selector. Err: %+v", err)
 		return reconcile.Result{RequeueAfter: time.Second * 5}, nil
@@ -233,6 +235,8 @@ func (r *ReconcileEnableCBT) disableCBTForNamespace(ctx context.Context, instanc
 		return reconcile.Result{RequeueAfter: time.Second * 5}, nil
 	}
 
+	reconcileLog.Infof("Found %d PVCs with label cbt=true in namespace: %q", len(pvcList.Items), instance.Namespace)
+
 	// 2. Find unattached PVCs
 	// Get all VolumeAttachments to efficiently check if attached
 	attachedPVs, err := r.getAttachedPVs(ctx)
@@ -241,10 +245,6 @@ func (r *ReconcileEnableCBT) disableCBTForNamespace(ctx context.Context, instanc
 	}
 
 	for _, pvc := range pvcList.Items {
-		if pvc.Spec.VolumeMode == nil || *pvc.Spec.VolumeMode != v1.PersistentVolumeBlock {
-			continue // Not a block volume
-		}
-
 		if pvc.Spec.VolumeName == "" {
 			continue // Unbound PVC
 		}
@@ -263,6 +263,10 @@ func (r *ReconcileEnableCBT) disableCBTForNamespace(ctx context.Context, instanc
 
 		if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != common.VSphereCSIDriverName {
 			continue
+		}
+
+		if pv.Spec.CSI.VolumeAttributes == nil || pv.Spec.CSI.VolumeAttributes[common.AttributeDiskType] != common.DiskTypeBlockVolume {
+			continue // Not a vSphere CNS block volume
 		}
 
 		volumeID := pv.Spec.CSI.VolumeHandle
