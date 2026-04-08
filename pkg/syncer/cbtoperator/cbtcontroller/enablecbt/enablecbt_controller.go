@@ -76,8 +76,8 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 			return e.Object.Status.Cbt
 		},
 		UpdateFunc: func(e event.TypedUpdateEvent[*cnsdpv1alpha1.EnableCBT]) bool {
-			// Trigger if Cbt changes to true
-			if !e.ObjectOld.Status.Cbt && e.ObjectNew.Status.Cbt {
+			// Trigger if Cbt changes
+			if e.ObjectOld.Status.Cbt != e.ObjectNew.Status.Cbt {
 				return true
 			}
 			return false
@@ -161,6 +161,10 @@ func (r *ReconcileEnableCBT) enableCBTForNamespace(ctx context.Context, instance
 	}
 
 	for _, pvc := range pvcList.Items {
+		if pvc.Spec.VolumeMode == nil || *pvc.Spec.VolumeMode != v1.PersistentVolumeBlock {
+			continue // Not a block volume
+		}
+
 		if pvc.Spec.VolumeName == "" {
 			continue // Unbound PVC
 		}
@@ -237,6 +241,10 @@ func (r *ReconcileEnableCBT) disableCBTForNamespace(ctx context.Context, instanc
 	}
 
 	for _, pvc := range pvcList.Items {
+		if pvc.Spec.VolumeMode == nil || *pvc.Spec.VolumeMode != v1.PersistentVolumeBlock {
+			continue // Not a block volume
+		}
+
 		if pvc.Spec.VolumeName == "" {
 			continue // Unbound PVC
 		}
