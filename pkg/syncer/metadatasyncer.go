@@ -178,6 +178,32 @@ func getFullSyncIntervalInMin(ctx context.Context) int {
 	return fullSyncIntervalInMin
 }
 
+// getCBTSyncIntervalInMin returns the CBTSync interval in minutes.
+// If environment variable CBT_SYNC_INTERVAL_MINUTES is set and valid (positive integer),
+// return that value. Otherwise use defaultCBTSyncIntervalInMin.
+func getCBTSyncIntervalInMin(ctx context.Context) int {
+	log := logger.GetLogger(ctx)
+	intervalInMin := defaultCBTSyncIntervalInMin
+	if v := os.Getenv("CBT_SYNC_INTERVAL_MINUTES"); v != "" {
+		if value, err := strconv.Atoi(v); err == nil {
+			if value <= 0 {
+				log.Warnf("CBTSync: interval set in env variable CBT_SYNC_INTERVAL_MINUTES %s "+
+					"is equal or less than 0, will use the default interval", v)
+			} else if value > defaultCBTSyncIntervalInMin {
+				log.Warnf("CBTSync: interval set in env variable CBT_SYNC_INTERVAL_MINUTES %s "+
+					"is larger than max value can be set, will use the default interval", v)
+			} else {
+				intervalInMin = value
+				log.Infof("CBTSync: interval is set to %d minutes", intervalInMin)
+			}
+		} else {
+			log.Warnf("CBTSync: interval set in env variable CBT_SYNC_INTERVAL_MINUTES %s "+
+				"is invalid, will use the default interval", v)
+		}
+	}
+	return intervalInMin
+}
+
 // getVolumeHealthIntervalInMin returns the VolumeHealthInterval.
 // If environment variable VOLUME_HEALTH_STATUS_INTERVAL_MINUTES is set and valid,
 // return the interval value read from environment variable.
@@ -792,6 +818,19 @@ func InitMetadataSyncer(ctx context.Context, clusterFlavor cnstypes.CnsClusterFl
 						csiFulSyncWg.Wait()
 					}
 				}
+			}
+		}()
+	}
+
+	if metadataSyncer.clusterFlavor == cnstypes.CnsClusterFlavorWorkload &&
+		metadataSyncer.coCommonInterface.IsFSSEnabled(ctx, common.CSI_Backup_API) {
+		cbtSyncTicker := time.NewTicker(time.Duration(getCBTSyncIntervalInMin(ctx)) * time.Minute)
+		defer cbtSyncTicker.Stop()
+		go func() {
+			for range cbtSyncTicker.C {
+				ctx, log = logger.GetNewContextWithLogger()
+				log.Infof("periodic CBTSync is triggered")
+				runPeriodicCBTSync(ctx, metadataSyncer)
 			}
 		}()
 	}

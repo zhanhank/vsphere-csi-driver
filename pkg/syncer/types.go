@@ -38,6 +38,9 @@ const (
 	// default interval for csi full sync, used unless overridden by user in csi-controller YAML
 	defaultFullSyncIntervalInMin = 30
 
+	// default interval for PVC/FCD CBT label reconciliation on Supervisor
+	defaultCBTSyncIntervalInMin = 30
+
 	// key for HealthStatus annotation on PVC
 	annVolumeHealth = "volumehealth.storage.kubernetes.io/health"
 
