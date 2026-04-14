@@ -19,6 +19,7 @@ package syncer
 import (
 	"context"
 
+	cnstypes "github.com/vmware/govmomi/cns/types"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -42,7 +43,7 @@ var enableCBTResource = schema.GroupVersionResource{
 
 const cbtLabelKey = "cbt"
 
-// runPeriodicCBTSync reconciles PVC cbt labels with FCD changed-block-tracking state.
+// runPeriodicCBTSync reconciles PVC cbt labels with CNS changed-block-tracking state.
 // It is invoked on the interval configured by CBT_SYNC_INTERVAL_MINUTES (see getCBTSyncIntervalInMin).
 // InitMetadataSyncer starts the periodic caller only on Supervisor when supports_CSI_Backup_API is
 // enabled at startup. This function no-ops if no EnableCBT CR exists in the cluster.
@@ -127,13 +128,18 @@ func syncPVCLabelsWithCBTInNamespace(ctx context.Context, volManager volumes.Man
 			continue
 		}
 		volumeID := pv.Spec.CSI.VolumeHandle
-		vStorageObject, err := volManager.RetrieveVStorageObject(ctx, volumeID)
+		queryRes, err := volManager.QueryVolume(ctx, cnstypes.CnsQueryFilter{
+			VolumeIds: []cnstypes.CnsVolumeId{{Id: volumeID}},
+		})
 		if err != nil {
-			log.Warnf("CBTSync: RetrieveVStorageObject failed for volume %q (PVC %q): %v", volumeID, pvc.Name, err)
+			log.Warnf("CBTSync: QueryVolume failed for volume %q (PVC %q): %v", volumeID, pvc.Name, err)
 			continue
 		}
-		cbtOn := vStorageObject.Config.ChangedBlockTrackingEnabled != nil &&
-			*vStorageObject.Config.ChangedBlockTrackingEnabled
+		if len(queryRes.Volumes) == 0 {
+			log.Warnf("CBTSync: no CNS volume for volume %q (PVC %q)", volumeID, pvc.Name)
+			continue
+		}
+		cbtOn := queryRes.Volumes[0].ChangedBlockTracking == cnstypes.CnsVolumeCBTStatusEnabled
 		labelSaysCBT := pvc.Labels != nil && pvc.Labels[cbtLabelKey] == "true"
 		if cbtOn == labelSaysCBT {
 			continue
@@ -153,10 +159,10 @@ func syncPVCLabelsWithCBTInNamespace(ctx context.Context, volManager volumes.Man
 		}
 		if cbtOn {
 			toUpdate.Labels[cbtLabelKey] = "true"
-			log.Infof("CBTSync: setting %s=%s on PVC %s/%s (FCD CBT enabled)", cbtLabelKey, "true", namespace, pvc.Name)
+			log.Infof("CBTSync: setting %s=%s on PVC %s/%s (CNS CBT enabled)", cbtLabelKey, "true", namespace, pvc.Name)
 		} else {
 			delete(toUpdate.Labels, cbtLabelKey)
-			log.Infof("CBTSync: removing label %s from PVC %s/%s (FCD CBT disabled)", cbtLabelKey, namespace, pvc.Name)
+			log.Infof("CBTSync: removing label %s from PVC %s/%s (CNS CBT disabled)", cbtLabelKey, namespace, pvc.Name)
 		}
 		if _, err := k8sClient.CoreV1().PersistentVolumeClaims(namespace).Update(ctx, toUpdate, metav1.UpdateOptions{}); err != nil {
 			log.Errorf("CBTSync: failed to update PVC %s/%s: %v", namespace, pvc.Name, err)

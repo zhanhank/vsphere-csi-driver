@@ -150,4 +150,4 @@ replace (
 	sigs.k8s.io/controller-runtime => sigs.k8s.io/controller-runtime v0.19.1
 )
 
-replace github.com/vmware/govmomi => github.com/zhanhank/govmomi v0.0.0-20260402060759-173e6bb59897
+replace github.com/vmware/govmomi => github.com/zhanhank/govmomi v0.0.0-20260414065950-774caabe3d34
