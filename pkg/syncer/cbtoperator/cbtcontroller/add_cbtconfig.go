@@ -17,10 +17,10 @@ limitations under the License.
 package cbtcontroller
 
 import (
-	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/syncer/cbtoperator/cbtcontroller/enablecbt"
+	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/syncer/cbtoperator/cbtcontroller/cbtconfig"
 )
 
 func init() {
 	// AddToManagerFuncs is a list of functions to create controllers and add them to a manager.
-	AddToManagerFuncs = append(AddToManagerFuncs, enablecbt.Add)
+	AddToManagerFuncs = append(AddToManagerFuncs, cbtconfig.Add)
 }

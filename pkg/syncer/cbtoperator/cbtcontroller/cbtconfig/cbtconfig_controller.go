@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package enablecbt
+package cbtconfig
 
 import (
 	"context"
@@ -45,11 +45,15 @@ const (
 	maxWorkerThreads = 10
 )
 
-// Add creates a new EnableCBT Controller and adds it to the Manager.
+func cbtStatusReportsEnabled(st cnsdpv1alpha1.CBTConfigStatus) bool {
+	return st.Enabled != nil && *st.Enabled
+}
+
+// Add creates a new CBTConfig controller and adds it to the Manager.
 func Add(mgr manager.Manager, clusterFlavor cnstypes.CnsClusterFlavor, volumeManager volume.Manager) error {
 	_, log := logger.GetNewContextWithLogger()
 	if clusterFlavor != cnstypes.CnsClusterFlavorWorkload {
-		log.Debug("Not initializing the EnableCBT Controller as its a non-WCP CSI deployment")
+		log.Debug("Not initializing the CBTConfig controller as its a non-WCP CSI deployment")
 		return nil
 	}
 	return add(mgr, newReconciler(mgr, volumeManager))
@@ -57,68 +61,64 @@ func Add(mgr manager.Manager, clusterFlavor cnstypes.CnsClusterFlavor, volumeMan
 
 // newReconciler returns a new reconcile.Reconciler
 func newReconciler(mgr manager.Manager, volumeManager volume.Manager) reconcile.Reconciler {
-	return &ReconcileEnableCBT{client: mgr.GetClient(), scheme: mgr.GetScheme(), volumeManager: volumeManager}
+	return &ReconcileCBTConfig{client: mgr.GetClient(), scheme: mgr.GetScheme(), volumeManager: volumeManager}
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler.
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	_, log := logger.GetNewContextWithLogger()
 	// Create a new controller.
-	c, err := controller.New("enablecbt-controller", mgr,
+	c, err := controller.New("cbtconfig-controller", mgr,
 		controller.Options{Reconciler: r, MaxConcurrentReconciles: maxWorkerThreads})
 	if err != nil {
-		log.Errorf("failed to create new EnableCBT controller with error: %+v", err)
+		log.Errorf("failed to create new CBTConfig controller with error: %+v", err)
 		return err
 	}
 
-	pred := predicate.TypedFuncs[*cnsdpv1alpha1.EnableCBT]{
-		CreateFunc: func(e event.TypedCreateEvent[*cnsdpv1alpha1.EnableCBT]) bool {
-			return e.Object.Status.Cbt
+	pred := predicate.TypedFuncs[*cnsdpv1alpha1.CBTConfig]{
+		CreateFunc: func(e event.TypedCreateEvent[*cnsdpv1alpha1.CBTConfig]) bool {
+			return cbtStatusReportsEnabled(e.Object.Status)
 		},
-		UpdateFunc: func(e event.TypedUpdateEvent[*cnsdpv1alpha1.EnableCBT]) bool {
-			// Trigger if Cbt changes
-			if e.ObjectOld.Status.Cbt != e.ObjectNew.Status.Cbt {
-				return true
-			}
-			return false
+		UpdateFunc: func(e event.TypedUpdateEvent[*cnsdpv1alpha1.CBTConfig]) bool {
+			return cbtStatusReportsEnabled(e.ObjectOld.Status) != cbtStatusReportsEnabled(e.ObjectNew.Status)
 		},
-		DeleteFunc: func(e event.TypedDeleteEvent[*cnsdpv1alpha1.EnableCBT]) bool {
+		DeleteFunc: func(e event.TypedDeleteEvent[*cnsdpv1alpha1.CBTConfig]) bool {
 			return false
 		},
 	}
 
 	err = c.Watch(source.Kind(
 		mgr.GetCache(),
-		&cnsdpv1alpha1.EnableCBT{},
-		&handler.TypedEnqueueRequestForObject[*cnsdpv1alpha1.EnableCBT]{}, pred))
+		&cnsdpv1alpha1.CBTConfig{},
+		&handler.TypedEnqueueRequestForObject[*cnsdpv1alpha1.CBTConfig]{}, pred))
 	if err != nil {
-		log.Errorf("failed to watch for changes to EnableCBT resource with error: %+v", err)
+		log.Errorf("failed to watch for changes to CBTConfig resource with error: %+v", err)
 		return err
 	}
 	return nil
 }
 
-// ReconcileEnableCBT reconciles a EnableCBT object.
-type ReconcileEnableCBT struct {
+// ReconcileCBTConfig reconciles a CBTConfig object.
+type ReconcileCBTConfig struct {
 	client        client.Client
 	scheme        *runtime.Scheme
 	volumeManager volume.Manager
 }
 
-// Reconcile reads that state of the cluster for a EnableCBT object and makes changes.
-func (r *ReconcileEnableCBT) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
+// Reconcile reads that state of the cluster for a CBTConfig object and makes changes.
+func (r *ReconcileCBTConfig) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	ctx = logger.NewContextWithLogger(ctx)
 	reconcileLog := logger.GetLogger(ctx)
 	reconcileLog.Infof("Received Reconcile for request: %q", request.NamespacedName)
 
-	instance := &cnsdpv1alpha1.EnableCBT{}
+	instance := &cnsdpv1alpha1.CBTConfig{}
 	err := r.client.Get(ctx, request.NamespacedName, instance)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			reconcileLog.Info("EnableCBT resource not found. Ignoring since object must be deleted.")
+			reconcileLog.Info("CBTConfig resource not found. Ignoring since object must be deleted.")
 			return reconcile.Result{}, nil
 		}
-		reconcileLog.Errorf("Error reading the EnableCBT with name: %q. Err: %+v", request.Name, err)
+		reconcileLog.Errorf("Error reading the CBTConfig with name: %q. Err: %+v", request.Name, err)
 		return reconcile.Result{}, err
 	}
 
@@ -126,14 +126,13 @@ func (r *ReconcileEnableCBT) Reconcile(ctx context.Context, request reconcile.Re
 		return reconcile.Result{}, nil
 	}
 
-	if instance.Status.Cbt {
+	if cbtStatusReportsEnabled(instance.Status) {
 		return r.enableCBTForNamespace(ctx, instance)
-	} else {
-		return r.disableCBTForNamespace(ctx, instance)
 	}
+	return r.disableCBTForNamespace(ctx, instance)
 }
 
-func (r *ReconcileEnableCBT) enableCBTForNamespace(ctx context.Context, instance *cnsdpv1alpha1.EnableCBT) (reconcile.Result, error) {
+func (r *ReconcileCBTConfig) enableCBTForNamespace(ctx context.Context, instance *cnsdpv1alpha1.CBTConfig) (reconcile.Result, error) {
 	reconcileLog := logger.GetLogger(ctx)
 
 	// 1. List all PVCs in the namespace without label cbt=true
@@ -211,11 +210,11 @@ func (r *ReconcileEnableCBT) enableCBTForNamespace(ctx context.Context, instance
 		}
 	}
 
-	reconcileLog.Infof("Finished EnableCBT Reconcile for namespace: %q", instance.Namespace)
+	reconcileLog.Infof("Finished CBTConfig reconcile (enable) for namespace: %q", instance.Namespace)
 	return reconcile.Result{}, nil
 }
 
-func (r *ReconcileEnableCBT) disableCBTForNamespace(ctx context.Context, instance *cnsdpv1alpha1.EnableCBT) (reconcile.Result, error) {
+func (r *ReconcileCBTConfig) disableCBTForNamespace(ctx context.Context, instance *cnsdpv1alpha1.CBTConfig) (reconcile.Result, error) {
 	reconcileLog := logger.GetLogger(ctx)
 
 	// 1. List all PVCs in the namespace with label cbt=true
@@ -291,11 +290,11 @@ func (r *ReconcileEnableCBT) disableCBTForNamespace(ctx context.Context, instanc
 		}
 	}
 
-	reconcileLog.Infof("Finished DisableCBT Reconcile for namespace: %q", instance.Namespace)
+	reconcileLog.Infof("Finished CBTConfig reconcile (disable) for namespace: %q", instance.Namespace)
 	return reconcile.Result{}, nil
 }
 
-func (r *ReconcileEnableCBT) getAttachedPVs(ctx context.Context) (map[string]bool, error) {
+func (r *ReconcileCBTConfig) getAttachedPVs(ctx context.Context) (map[string]bool, error) {
 	reconcileLog := logger.GetLogger(ctx)
 	var vaList storagev1.VolumeAttachmentList
 	err := r.client.List(ctx, &vaList)

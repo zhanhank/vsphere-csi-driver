@@ -16,7 +16,7 @@ metadata:
   name: vsphere-csi-controller-role
 rules:
   - apiGroups: ["cnsdp.vmware.com"]
-    resources: ["enablecbts"]
+    resources: ["cbtconfigs"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["nodes", "pods", "resourcequotas", "namespaces", "services"]

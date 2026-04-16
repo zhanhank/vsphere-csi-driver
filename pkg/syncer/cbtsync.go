@@ -35,10 +35,10 @@ import (
 	k8s "sigs.k8s.io/vsphere-csi-driver/v3/pkg/kubernetes"
 )
 
-var enableCBTResource = schema.GroupVersionResource{
+var cbtConfigResource = schema.GroupVersionResource{
 	Group:    "cnsdp.vmware.com",
 	Version:  "v1alpha1",
-	Resource: "enablecbts",
+	Resource: "cbtconfigs",
 }
 
 const cbtLabelKey = "cbt"
@@ -46,16 +46,16 @@ const cbtLabelKey = "cbt"
 // runPeriodicCBTSync reconciles PVC cbt labels with CNS changed-block-tracking state.
 // It is invoked on the interval configured by CBT_SYNC_INTERVAL_MINUTES (see getCBTSyncIntervalInMin).
 // InitMetadataSyncer starts the periodic caller only on Supervisor when supports_CSI_Backup_API is
-// enabled at startup. This function no-ops if no EnableCBT CR exists in the cluster.
+// enabled at startup. This function no-ops if no CBTConfig CR exists in the cluster.
 func runPeriodicCBTSync(ctx context.Context, metadataSyncer *metadataSyncInformer) {
 	log := logger.GetLogger(ctx)
-	namespaces, err := listNamespacesWithEnableCBTCR(ctx)
+	namespaces, err := listNamespacesWithCBTConfigCR(ctx)
 	if err != nil {
-		log.Errorf("CBTSync: failed to list EnableCBT CRs: %v", err)
+		log.Errorf("CBTSync: failed to list CBTConfig CRs: %v", err)
 		return
 	}
 	if len(namespaces) == 0 {
-		log.Debug("CBTSync: skipping, no EnableCBT CR in cluster")
+		log.Debug("CBTSync: skipping, no CBTConfig CR in cluster")
 		return
 	}
 	log.Infof("CBTSync: starting periodic reconciliation for %d namespace(s)", len(namespaces))
@@ -64,7 +64,7 @@ func runPeriodicCBTSync(ctx context.Context, metadataSyncer *metadataSyncInforme
 	}
 }
 
-func listNamespacesWithEnableCBTCR(ctx context.Context) (map[string]struct{}, error) {
+func listNamespacesWithCBTConfigCR(ctx context.Context) (map[string]struct{}, error) {
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return nil, err
@@ -73,11 +73,11 @@ func listNamespacesWithEnableCBTCR(ctx context.Context) (map[string]struct{}, er
 	if err != nil {
 		return nil, err
 	}
-	unstructuredList, err := dynClient.Resource(enableCBTResource).Namespace(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	unstructuredList, err := dynClient.Resource(cbtConfigResource).Namespace(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
-	var list cnsdpv1alpha1.EnableCBTList
+	var list cnsdpv1alpha1.CBTConfigList
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(unstructuredList.UnstructuredContent(), &list); err != nil {
 		return nil, err
 	}
