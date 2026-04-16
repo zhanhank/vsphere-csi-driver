@@ -18,8 +18,8 @@ ARG GIT_COMMIT
 LABEL git_commit=$GIT_COMMIT
 LABEL "maintainers"="Divyen Patel <divyenp@vmware.com>, Xing Yang <yangxi@vmware.com>, Satyanarayana Kolluri <satyanarayana.kolluri@broadcom.com>"
 
-# Install required packages for CSI driver
-RUN tdnf -y install \
+# Install required packages for CSI driver (photon base repo; image defaults to updates-only).
+RUN tdnf -y install --enablerepo=photon \
   nfs-utils \
   util-linux \
   e2fsprogs \

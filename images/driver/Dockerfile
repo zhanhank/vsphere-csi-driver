@@ -63,8 +63,9 @@ RUN tdnf -y upgrade
 # util-linux : Utilities for handling file systems, consoles, partitions.
 # e2fsprogs  : The E2fsprogs package contains the utilities for handling the ext file system.
 # xfsprogs   : The xfsprogs package contains administration and debugging tools for the XFS file system
+# photon:5.0 enables only photon-updates by default; these packages live in the photon base repo.
 
-RUN tdnf -y install \
+RUN tdnf -y install --enablerepo=photon \
   nfs-utils \
   util-linux \
   e2fsprogs \
