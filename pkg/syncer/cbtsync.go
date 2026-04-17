@@ -32,6 +32,7 @@ import (
 
 	cnsdpv1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsdp/v1alpha1"
 	volumes "sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/cns-lib/volume"
+	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/utils"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/csi/service/common"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/csi/service/logger"
 	k8s "sigs.k8s.io/vsphere-csi-driver/v3/pkg/kubernetes"
@@ -43,7 +44,12 @@ var cbtConfigResource = schema.GroupVersionResource{
 	Resource: "cbtconfigs",
 }
 
-const cbtLabelKey = "cbt"
+const (
+	cbtLabelKey = "cbt"
+	// cbtPVCListPageSize caps how many PVCs each List call returns. Large namespaces
+	// avoid one oversized response and reduce apiserver/client timeout risk.
+	cbtPVCListPageSize int64 = 500
+)
 
 // runPeriodicCBTSync reconciles PVC cbt labels with CNS changed-block-tracking state.
 // It is invoked on the interval configured by CBT_SYNC_INTERVAL_MINUTES (see getCBTSyncIntervalInMin).
@@ -114,14 +120,50 @@ func csiCBTSync(ctx context.Context, metadataSyncer *metadataSyncInformer, vc st
 	return nil
 }
 
+// cbtPVCWorkItem binds a PVC from one list page to its CNS volume handle for label reconciliation.
+type cbtPVCWorkItem struct {
+	pvc      *v1.PersistentVolumeClaim
+	volumeID string
+}
+
 func syncPVCLabelsWithCBTInNamespace(ctx context.Context, volManager volumes.Manager,
 	k8sClient clientset.Interface, namespace string) {
 	log := logger.GetLogger(ctx)
-	pvcList, err := k8sClient.CoreV1().PersistentVolumeClaims(namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		log.Errorf("CBTSync: failed to list PVCs in namespace %q: %v", namespace, err)
+	pvcClient := k8sClient.CoreV1().PersistentVolumeClaims(namespace)
+	listOpts := metav1.ListOptions{Limit: cbtPVCListPageSize}
+	for {
+		pvcList, err := pvcClient.List(ctx, listOpts)
+		if err != nil {
+			log.Errorf("CBTSync: failed to list PVCs in namespace %q: %v", namespace, err)
+			return
+		}
+		syncCBTForPVCListPage(ctx, volManager, k8sClient, namespace, pvcList)
+		if pvcList.Continue == "" {
+			break
+		}
+		listOpts.Continue = pvcList.Continue
+	}
+}
+
+// syncCBTForPVCListPage reconciles CBT labels for one Kubernetes PVC list page only (bounded memory).
+func syncCBTForPVCListPage(ctx context.Context, volManager volumes.Manager, k8sClient clientset.Interface,
+	namespace string, pvcList *v1.PersistentVolumeClaimList) {
+	workItems := buildCBTWorkItemsForPVCPage(ctx, k8sClient, pvcList)
+	if len(workItems) == 0 {
 		return
 	}
+	volumeIDs := make([]cnstypes.CnsVolumeId, len(workItems))
+	for i := range workItems {
+		volumeIDs[i] = cnstypes.CnsVolumeId{Id: workItems[i].volumeID}
+	}
+	cbtByVolume := queryCNSCbtEnabledByVolumeIDs(ctx, volManager, namespace, volumeIDs)
+	reconcilePVCCBTLabels(ctx, k8sClient, namespace, workItems, cbtByVolume)
+}
+
+func buildCBTWorkItemsForPVCPage(ctx context.Context, k8sClient clientset.Interface,
+	pvcList *v1.PersistentVolumeClaimList) []cbtPVCWorkItem {
+	log := logger.GetLogger(ctx)
+	var workItems []cbtPVCWorkItem
 	for i := range pvcList.Items {
 		pvc := &pvcList.Items[i]
 		if pvc.Spec.VolumeName == "" {
@@ -136,23 +178,58 @@ func syncPVCLabelsWithCBTInNamespace(ctx context.Context, volManager volumes.Man
 			continue
 		}
 		volumeID := pv.Spec.CSI.VolumeHandle
-		queryRes, err := volManager.QueryVolume(ctx, cnstypes.CnsQueryFilter{
-			VolumeIds: []cnstypes.CnsVolumeId{{Id: volumeID}},
-		})
+		workItems = append(workItems, cbtPVCWorkItem{pvc: pvc, volumeID: volumeID})
+	}
+	return workItems
+}
+
+// queryCNSCbtEnabledByVolumeIDs returns CBT-on per volume ID for the given slice, using CNS batch limits.
+func queryCNSCbtEnabledByVolumeIDs(ctx context.Context, volManager volumes.Manager, namespace string,
+	volumeIDs []cnstypes.CnsVolumeId) map[string]bool {
+	log := logger.GetLogger(ctx)
+	cbtByVolume := make(map[string]bool)
+	for i := 0; i < len(volumeIDs); i += volumdIDLimitPerQuery {
+		end := i + volumdIDLimitPerQuery
+		if end > len(volumeIDs) {
+			end = len(volumeIDs)
+		}
+		batch := volumeIDs[i:end]
+		queryFilter := cnstypes.CnsQueryFilter{VolumeIds: batch}
+		queryRes, err := utils.QueryVolumeUtil(ctx, volManager, queryFilter, nil)
 		if err != nil {
-			log.Warnf("CBTSync: QueryVolume failed for volume %q (PVC %q): %v", volumeID, pvc.Name, err)
+			log.Warnf("CBTSync: QueryVolumeUtil failed for namespace %q volumes %d-%d: %v",
+				namespace, i+1, end, err)
 			continue
 		}
-		if len(queryRes.Volumes) == 0 {
-			log.Warnf("CBTSync: no CNS volume for volume %q (PVC %q)", volumeID, pvc.Name)
+		if queryRes == nil {
+			log.Infof("CBTSync: empty query result for namespace %q volumes %d-%d", namespace, i+1, end)
 			continue
 		}
-		cbtOn := queryRes.Volumes[0].ChangedBlockTracking == cnstypes.CnsVolumeCBTStatusEnabled
+		for j := range queryRes.Volumes {
+			vol := &queryRes.Volumes[j]
+			cbtByVolume[vol.VolumeId.Id] = vol.ChangedBlockTracking == cnstypes.CnsVolumeCBTStatusEnabled
+		}
+	}
+	return cbtByVolume
+}
+
+func reconcilePVCCBTLabels(ctx context.Context, k8sClient clientset.Interface, namespace string,
+	workItems []cbtPVCWorkItem, cbtEnabledByVolume map[string]bool) {
+	log := logger.GetLogger(ctx)
+	pvcClient := k8sClient.CoreV1().PersistentVolumeClaims(namespace)
+	for _, item := range workItems {
+		pvc := item.pvc
+		volumeID := item.volumeID
+		cbtOn, ok := cbtEnabledByVolume[volumeID]
+		if !ok {
+			log.Warnf("CBTSync: no CNS volume in query results for volume %q (PVC %q)", volumeID, pvc.Name)
+			continue
+		}
 		labelSaysCBT := pvc.Labels != nil && pvc.Labels[cbtLabelKey] == "true"
 		if cbtOn == labelSaysCBT {
 			continue
 		}
-		fresh, err := k8sClient.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, pvc.Name, metav1.GetOptions{})
+		fresh, err := pvcClient.Get(ctx, pvc.Name, metav1.GetOptions{})
 		if err != nil {
 			log.Warnf("CBTSync: failed to re-get PVC %q: %v", pvc.Name, err)
 			continue
@@ -172,7 +249,7 @@ func syncPVCLabelsWithCBTInNamespace(ctx context.Context, volManager volumes.Man
 			delete(toUpdate.Labels, cbtLabelKey)
 			log.Infof("CBTSync: removing label %s from PVC %s/%s (CNS CBT disabled)", cbtLabelKey, namespace, pvc.Name)
 		}
-		if _, err := k8sClient.CoreV1().PersistentVolumeClaims(namespace).Update(ctx, toUpdate, metav1.UpdateOptions{}); err != nil {
+		if _, err := pvcClient.Update(ctx, toUpdate, metav1.UpdateOptions{}); err != nil {
 			log.Errorf("CBTSync: failed to update PVC %s/%s: %v", namespace, pvc.Name, err)
 		}
 	}
