@@ -44,7 +44,44 @@ import (
 
 const (
 	maxWorkerThreads = 10
+	// cbtConfigListPageSize caps list responses per apiserver call (namespaced PVCs and cluster VolumeAttachments).
+	cbtConfigListPageSize int64 = 500
 )
+
+// cbtPVCReconcileParams holds derived strings and selectors for one enable/disable reconcile pass.
+type cbtPVCReconcileParams struct {
+	labelSelector labels.Selector
+	pvcListDesc   string
+	actionVerb    string
+	failVerb      string
+	finishTag     string
+	enable        bool
+}
+
+func newCBTPVCReconcileParams(enable bool) (*cbtPVCReconcileParams, error) {
+	p := &cbtPVCReconcileParams{enable: enable}
+	if enable {
+		p.pvcListDesc = "without label cbt=true"
+		p.actionVerb = "Enabling"
+		p.failVerb = "enable"
+		p.finishTag = "enable"
+	} else {
+		p.pvcListDesc = "with label cbt=true"
+		p.actionVerb = "Disabling"
+		p.failVerb = "disable"
+		p.finishTag = "disable"
+	}
+	sel := "cbt!=true"
+	if !enable {
+		sel = "cbt=true"
+	}
+	ls, err := labels.Parse(sel)
+	if err != nil {
+		return nil, err
+	}
+	p.labelSelector = ls
+	return p, nil
+}
 
 func cbtStatusReportsEnabled(st cnsdpv1alpha1.CBTConfigStatus) bool {
 	return st.Enabled != nil && *st.Enabled
@@ -139,133 +176,145 @@ func (r *ReconcileCBTConfig) Reconcile(ctx context.Context, request reconcile.Re
 // PVC label so attached volumes are handled on a later reconcile.
 func (r *ReconcileCBTConfig) reconcileCBTForNamespace(ctx context.Context, instance *cnsdpv1alpha1.CBTConfig, enable bool) (reconcile.Result, error) {
 	log := logger.GetLogger(ctx)
-
-	var listSelector, pvcListDesc, actionVerb, failVerb, finishTag string
-	if enable {
-		listSelector = "cbt!=true"
-		pvcListDesc = "without label cbt=true"
-		actionVerb = "Enabling"
-		failVerb = "enable"
-		finishTag = "enable"
-	} else {
-		listSelector = "cbt=true"
-		pvcListDesc = "with label cbt=true"
-		actionVerb = "Disabling"
-		failVerb = "disable"
-		finishTag = "disable"
-	}
-
-	labelSelector, err := labels.Parse(listSelector)
+	params, err := newCBTPVCReconcileParams(enable)
 	if err != nil {
 		log.Errorf("Failed to parse label selector. Err: %+v", err)
 		return reconcile.Result{RequeueAfter: time.Second * 5}, nil
 	}
-
-	var pvcList v1.PersistentVolumeClaimList
-	err = r.client.List(ctx, &pvcList, &client.ListOptions{
-		Namespace:     instance.Namespace,
-		LabelSelector: labelSelector,
-	})
-	if err != nil {
-		log.Errorf("Failed to list PVCs in namespace: %q. Err: %+v", instance.Namespace, err)
-		return reconcile.Result{RequeueAfter: time.Second * 5}, nil
-	}
-
-	log.Infof("Found %d PVCs %s in namespace: %q", len(pvcList.Items), pvcListDesc, instance.Namespace)
-
 	attachedPVs, err := r.getAttachedPVs(ctx)
 	if err != nil {
 		return reconcile.Result{RequeueAfter: time.Second * 5}, nil
 	}
-
-	for _, pvc := range pvcList.Items {
-		if pvc.Spec.VolumeName == "" {
-			continue // Unbound PVC
-		}
-
-		if attachedPVs[pvc.Spec.VolumeName] {
-			log.Debugf("PVC %s is attached to PodVM", pvc.Name)
-			continue // PVC is attached to PodVM
-		}
-
-		// check if there is annoation similar as cns.vmware.com/usedby-vm-cba2920d-d6a3-41ba-a257-d61a2558d404: ""
-		if pvc.Annotations != nil {
-			for key, value := range pvc.Annotations {
-				if strings.HasPrefix(key, "cns.v.com/usedby-vm-") && value == "" {
-					log.Debugf("PVC %s is attached to a VM Service VM", pvc.Name)
-					continue // PVC is attached to a VM Service VM
-				}
-			}
-		}
-
-		var pv v1.PersistentVolume
-		err = r.client.Get(ctx, client.ObjectKey{Name: pvc.Spec.VolumeName}, &pv)
-		if err != nil {
-			log.Errorf("Failed to get PV %s for PVC %s. Err: %+v", pvc.Spec.VolumeName, pvc.Name, err)
-			continue
-		}
-
-		if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != common.VSphereCSIDriverName {
-			continue
-		}
-
-		if pv.Spec.CSI.VolumeAttributes == nil || pv.Spec.CSI.VolumeAttributes[common.AttributeDiskType] != common.DiskTypeBlockVolume {
-			continue // Not a vSphere CNS block volume
-		}
-
-		volumeID := pv.Spec.CSI.VolumeHandle
-		if volumeID == "" {
-			continue
-		}
-
-		log.Infof("%s CBT for unattached PVC %s (Volume ID: %s)", actionVerb, pvc.Name, volumeID)
-		if enable {
-			err = common.SetVolumeCbtFlagsUtil(ctx, r.volumeManager, volumeID)
-		} else {
-			err = common.ClearVolumeCbtFlagsUtil(ctx, r.volumeManager, volumeID)
-		}
-		if err != nil {
-			log.Errorf("Failed to %s CBT for volume %s. Err: %+v", failVerb, volumeID, err)
-			continue
-		}
-
-		if enable {
-			if pvc.Labels == nil {
-				pvc.Labels = make(map[string]string)
-			}
-			pvc.Labels["cbt"] = "true"
-		} else {
-			delete(pvc.Labels, "cbt")
-		}
-		err = r.client.Update(ctx, &pvc)
-		if err != nil {
-			if enable {
-				log.Errorf("Failed to add label cbt=true to PVC %s. Err: %+v", pvc.Name, err)
-			} else {
-				log.Errorf("Failed to remove label cbt=true from PVC %s. Err: %+v", pvc.Name, err)
-			}
-			continue
-		}
+	totalPVCsListed, err := r.reconcileCBTForAllPVCPages(ctx, instance.Namespace, params, attachedPVs)
+	if err != nil {
+		log.Errorf("Failed to list PVCs in namespace: %q. Err: %+v", instance.Namespace, err)
+		return reconcile.Result{RequeueAfter: time.Second * 5}, nil
 	}
-
-	log.Infof("Finished CBTConfig reconcile (%s) for namespace: %q", finishTag, instance.Namespace)
+	log.Infof("Listed %d PVCs %s in namespace: %q (paged)", totalPVCsListed, params.pvcListDesc, instance.Namespace)
+	log.Infof("Finished CBTConfig reconcile (%s) for namespace: %q", params.finishTag, instance.Namespace)
 	return reconcile.Result{}, nil
 }
 
+func (r *ReconcileCBTConfig) reconcileCBTForAllPVCPages(ctx context.Context, namespace string,
+	params *cbtPVCReconcileParams, attachedPVs map[string]bool) (int, error) {
+	listOpts := &client.ListOptions{
+		Namespace:     namespace,
+		LabelSelector: params.labelSelector,
+		Limit:         cbtConfigListPageSize,
+	}
+	var totalPVCsListed int
+	for {
+		var pvcList v1.PersistentVolumeClaimList
+		if err := r.client.List(ctx, &pvcList, listOpts); err != nil {
+			return 0, err
+		}
+		totalPVCsListed += len(pvcList.Items)
+		r.processCBTForPVCCandidatesInPage(ctx, &pvcList, params, attachedPVs)
+		if pvcList.Continue == "" {
+			break
+		}
+		listOpts.Continue = pvcList.Continue
+	}
+	return totalPVCsListed, nil
+}
+
+func (r *ReconcileCBTConfig) processCBTForPVCCandidatesInPage(ctx context.Context, pvcList *v1.PersistentVolumeClaimList,
+	params *cbtPVCReconcileParams, attachedPVs map[string]bool) {
+	for i := range pvcList.Items {
+		pvc := &pvcList.Items[i]
+		if !r.pvcShouldBeConsideredForCBT(ctx, pvc, attachedPVs) {
+			continue
+		}
+		r.tryApplyCBTAndLabelForPVC(ctx, pvc, params)
+	}
+}
+
+func (r *ReconcileCBTConfig) pvcShouldBeConsideredForCBT(ctx context.Context, pvc *v1.PersistentVolumeClaim, attachedPVs map[string]bool) bool {
+	log := logger.GetLogger(ctx)
+	if pvc.Spec.VolumeName == "" {
+		return false
+	}
+	if attachedPVs[pvc.Spec.VolumeName] {
+		log.Debugf("PVC %s is attached to PodVM", pvc.Name)
+		return false
+	}
+	if pvc.Annotations != nil {
+		for key, value := range pvc.Annotations {
+			if strings.HasPrefix(key, "cns.v.com/usedby-vm-") && value == "" {
+				log.Debugf("PVC %s is attached to a VM Service VM", pvc.Name)
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (r *ReconcileCBTConfig) tryApplyCBTAndLabelForPVC(ctx context.Context, pvc *v1.PersistentVolumeClaim, params *cbtPVCReconcileParams) {
+	log := logger.GetLogger(ctx)
+	var pv v1.PersistentVolume
+	if err := r.client.Get(ctx, client.ObjectKey{Name: pvc.Spec.VolumeName}, &pv); err != nil {
+		log.Errorf("Failed to get PV %s for PVC %s. Err: %+v", pvc.Spec.VolumeName, pvc.Name, err)
+		return
+	}
+	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != common.VSphereCSIDriverName {
+		return
+	}
+	if pv.Spec.CSI.VolumeAttributes == nil || pv.Spec.CSI.VolumeAttributes[common.AttributeDiskType] != common.DiskTypeBlockVolume {
+		return
+	}
+	volumeID := pv.Spec.CSI.VolumeHandle
+	if volumeID == "" {
+		return
+	}
+	log.Infof("%s CBT for unattached PVC %s (Volume ID: %s)", params.actionVerb, pvc.Name, volumeID)
+	var err error
+	if params.enable {
+		err = common.SetVolumeCbtFlagsUtil(ctx, r.volumeManager, volumeID)
+	} else {
+		err = common.ClearVolumeCbtFlagsUtil(ctx, r.volumeManager, volumeID)
+	}
+	if err != nil {
+		log.Errorf("Failed to %s CBT for volume %s. Err: %+v", params.failVerb, volumeID, err)
+		return
+	}
+	if params.enable {
+		if pvc.Labels == nil {
+			pvc.Labels = make(map[string]string)
+		}
+		pvc.Labels["cbt"] = "true"
+	} else {
+		delete(pvc.Labels, "cbt")
+	}
+	if err := r.client.Update(ctx, pvc); err != nil {
+		if params.enable {
+			log.Errorf("Failed to add label cbt=true to PVC %s. Err: %+v", pvc.Name, err)
+		} else {
+			log.Errorf("Failed to remove label cbt=true from PVC %s. Err: %+v", pvc.Name, err)
+		}
+	}
+}
+
+// getAttachedPVs returns PV names that have an active VolumeAttachment (cluster-scoped list, paged).
 func (r *ReconcileCBTConfig) getAttachedPVs(ctx context.Context) (map[string]bool, error) {
 	log := logger.GetLogger(ctx)
-	var vaList storagev1.VolumeAttachmentList
-	err := r.client.List(ctx, &vaList)
-	if err != nil {
-		log.Errorf("Failed to list VolumeAttachments. Err: %+v", err)
-		return nil, err
-	}
-
 	attachedPVs := make(map[string]bool)
-	for _, va := range vaList.Items {
-		if va.Spec.Source.PersistentVolumeName != nil {
-			attachedPVs[*va.Spec.Source.PersistentVolumeName] = true
+	listOpts := &client.ListOptions{Limit: cbtConfigListPageSize}
+	for {
+		var vaList storagev1.VolumeAttachmentList
+		if err := r.client.List(ctx, &vaList, listOpts); err != nil {
+			log.Errorf("Failed to list VolumeAttachments. Err: %+v", err)
+			return nil, err
 		}
+		for i := range vaList.Items {
+			va := &vaList.Items[i]
+			if va.Spec.Source.PersistentVolumeName != nil {
+				attachedPVs[*va.Spec.Source.PersistentVolumeName] = true
+			}
+		}
+		if vaList.Continue == "" {
+			break
+		}
+		listOpts.Continue = vaList.Continue
 	}
 	return attachedPVs, nil
 }
