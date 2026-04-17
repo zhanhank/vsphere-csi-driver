@@ -87,6 +87,10 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		},
 	}
 
+	// source.Kind does not talk to the apiserver here: Watch only registers the source.
+	// When the manager starts the controller, controller-runtime's Kind source polls
+	// cache.GetInformer for this type (default 10s) until the CBTConfig CRD is registered
+	// or the manager context is cancelled, then attaches the informer handler.
 	err = c.Watch(source.Kind(
 		mgr.GetCache(),
 		&cnsdpv1alpha1.CBTConfig{},
