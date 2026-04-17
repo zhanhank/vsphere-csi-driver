@@ -21,6 +21,8 @@ import (
 
 	cnstypes "github.com/vmware/govmomi/cns/types"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apiMeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -75,6 +77,10 @@ func listNamespacesWithCBTConfigCR(ctx context.Context) (map[string]struct{}, er
 	}
 	unstructuredList, err := dynClient.Resource(cbtConfigResource).Namespace(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
 	if err != nil {
+		// CRD may be installed after the syncer; treat missing API like "no CBTConfig objects".
+		if apiMeta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	var list cnsdpv1alpha1.CBTConfigList
