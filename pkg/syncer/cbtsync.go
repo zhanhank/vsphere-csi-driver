@@ -67,6 +67,7 @@ func runPeriodicCBTSync(ctx context.Context, metadataSyncer *metadataSyncInforme
 }
 
 func listNamespacesWithCBTConfigCR(ctx context.Context) (map[string]struct{}, error) {
+	log := logger.GetLogger(ctx)
 	cfg, err := config.GetConfig()
 	if err != nil {
 		return nil, err
@@ -79,6 +80,7 @@ func listNamespacesWithCBTConfigCR(ctx context.Context) (map[string]struct{}, er
 	if err != nil {
 		// CRD may be installed after the syncer; treat missing API like "no CBTConfig objects".
 		if apiMeta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
+			log.Debug("CBTSync: CBTConfig CRD not found, skipping")
 			return nil, nil
 		}
 		return nil, err
