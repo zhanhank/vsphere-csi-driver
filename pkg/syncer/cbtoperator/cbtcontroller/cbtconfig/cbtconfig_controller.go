@@ -239,8 +239,8 @@ func (r *ReconcileCBTConfig) pvcShouldBeConsideredForCBT(ctx context.Context, pv
 		return false
 	}
 	if pvc.Annotations != nil {
-		for key, value := range pvc.Annotations {
-			if strings.HasPrefix(key, "cns.v.com/usedby-vm-") && value == "" {
+		for key := range pvc.Annotations {
+			if strings.HasPrefix(key, "cns.vmware.com/usedby-vm-") {
 				log.Debugf("PVC %s is attached to a VM Service VM", pvc.Name)
 				return false
 			}

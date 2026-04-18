@@ -183,32 +183,29 @@ func buildCBTWorkItemsForPVCPage(ctx context.Context, k8sClient clientset.Interf
 	return workItems
 }
 
-// queryCNSCbtEnabledByVolumeIDs returns CBT-on per volume ID for the given slice, using CNS batch limits.
+// queryCNSCbtEnabledByVolumeIDs returns CBT-on per volume ID for the given slice.
+// Callers bound the slice size (e.g. one PVC list page) so a single QueryVolumeUtil is sufficient.
 func queryCNSCbtEnabledByVolumeIDs(ctx context.Context, volManager volumes.Manager, namespace string,
 	volumeIDs []cnstypes.CnsVolumeId) map[string]bool {
 	log := logger.GetLogger(ctx)
 	cbtByVolume := make(map[string]bool)
-	for i := 0; i < len(volumeIDs); i += volumdIDLimitPerQuery {
-		end := i + volumdIDLimitPerQuery
-		if end > len(volumeIDs) {
-			end = len(volumeIDs)
-		}
-		batch := volumeIDs[i:end]
-		queryFilter := cnstypes.CnsQueryFilter{VolumeIds: batch}
-		queryRes, err := utils.QueryVolumeUtil(ctx, volManager, queryFilter, nil)
-		if err != nil {
-			log.Warnf("CBTSync: QueryVolumeUtil failed for namespace %q volumes %d-%d: %v",
-				namespace, i+1, end, err)
-			continue
-		}
-		if queryRes == nil {
-			log.Infof("CBTSync: empty query result for namespace %q volumes %d-%d", namespace, i+1, end)
-			continue
-		}
-		for j := range queryRes.Volumes {
-			vol := &queryRes.Volumes[j]
-			cbtByVolume[vol.VolumeId.Id] = vol.ChangedBlockTracking == cnstypes.CnsVolumeCBTStatusEnabled
-		}
+	if len(volumeIDs) == 0 {
+		return cbtByVolume
+	}
+	queryFilter := cnstypes.CnsQueryFilter{VolumeIds: volumeIDs}
+	queryRes, err := utils.QueryVolumeUtil(ctx, volManager, queryFilter, nil)
+	if err != nil {
+		log.Warnf("CBTSync: QueryVolumeUtil failed for namespace %q (%d volumes): %v",
+			namespace, len(volumeIDs), err)
+		return cbtByVolume
+	}
+	if queryRes == nil {
+		log.Infof("CBTSync: empty query result for namespace %q (%d volumes)", namespace, len(volumeIDs))
+		return cbtByVolume
+	}
+	for j := range queryRes.Volumes {
+		vol := &queryRes.Volumes[j]
+		cbtByVolume[vol.VolumeId.Id] = vol.ChangedBlockTracking == cnstypes.CnsVolumeCBTStatusEnabled
 	}
 	return cbtByVolume
 }
