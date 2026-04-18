@@ -53,7 +53,10 @@ const (
 	defaultMaxVolumeCbtOpWorkerThreads = 5
 
 	capvVmLabelKey = "capv.vmware.com"
-	// cbtConfigListPageSize caps list responses per apiserver call (namespaced PVCs and cluster VolumeAttachments).
+	// volumeAttachmentByPVNameField is the controller-runtime cache index key for listing
+	// VolumeAttachments that reference a given PersistentVolume name (see Add).
+	volumeAttachmentByPVNameField = "spec.source.persistentVolumeName"
+	// cbtConfigListPageSize caps list responses per apiserver call (namespaced PVCs).
 	cbtConfigListPageSize int64 = 500
 )
 
@@ -105,8 +108,28 @@ func Add(mgr manager.Manager, clusterFlavor cnstypes.CnsClusterFlavor, volumeMan
 	}
 	maxReconcile := util.GetMaxWorkerThreads(ctx, workerThreadsReconcileEnvVar, defaultMaxReconcileWorkerThreads)
 	maxVolCbtOps := util.GetMaxWorkerThreads(ctx, workerThreadsVolumeCbtOpsEnvVar, defaultMaxVolumeCbtOpWorkerThreads)
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &storagev1.VolumeAttachment{}, volumeAttachmentByPVNameField,
+		indexVolumeAttachmentByPersistentVolumeName); err != nil {
+		log.Errorf("failed to register VolumeAttachment field index %q: %+v", volumeAttachmentByPVNameField, err)
+		return err
+	}
 	rec := newReconciler(mgr, volumeManager, maxReconcile, maxVolCbtOps)
 	return add(mgr, rec)
+}
+
+func indexVolumeAttachmentByPersistentVolumeName(obj client.Object) []string {
+	va, ok := obj.(*storagev1.VolumeAttachment)
+	if !ok {
+		return nil
+	}
+	if va.Spec.Source.PersistentVolumeName == nil {
+		return nil
+	}
+	name := *va.Spec.Source.PersistentVolumeName
+	if name == "" {
+		return nil
+	}
+	return []string{name}
 }
 
 // newReconciler returns a configured CBTConfig reconciler (also implements reconcile.Reconciler).
@@ -201,11 +224,7 @@ func (r *ReconcileCBTConfig) reconcileCBTForNamespace(ctx context.Context, insta
 		log.Errorf("Failed to parse label selector. Err: %+v", err)
 		return reconcile.Result{RequeueAfter: time.Second * 5}, nil
 	}
-	attachedPVs, err := r.getAttachedPVs(ctx)
-	if err != nil {
-		return reconcile.Result{RequeueAfter: time.Second * 5}, nil
-	}
-	totalPVCsListed, err := r.reconcileCBTForAllPVCPages(ctx, instance.Namespace, params, attachedPVs)
+	totalPVCsListed, err := r.reconcileCBTForAllPVCPages(ctx, instance.Namespace, params)
 	if err != nil {
 		log.Errorf("Failed to list PVCs in namespace: %q. Err: %+v", instance.Namespace, err)
 		return reconcile.Result{RequeueAfter: time.Second * 5}, nil
@@ -216,12 +235,15 @@ func (r *ReconcileCBTConfig) reconcileCBTForNamespace(ctx context.Context, insta
 }
 
 func (r *ReconcileCBTConfig) reconcileCBTForAllPVCPages(ctx context.Context, namespace string,
-	params *cbtPVCReconcileParams, attachedPVs map[string]bool) (int, error) {
+	params *cbtPVCReconcileParams) (int, error) {
 	listOpts := &client.ListOptions{
 		Namespace:     namespace,
 		LabelSelector: params.labelSelector,
 		Limit:         cbtConfigListPageSize,
 	}
+	// Memo: PV name -> has at least one VolumeAttachment. Only names that appear on PVCs in
+	// this namespace are resolved (indexed List per name), not a cluster-wide VA scan.
+	attachedPVs := make(map[string]bool)
 	var totalPVCsListed int
 	for {
 		var pvcList v1.PersistentVolumeClaimList
@@ -229,6 +251,9 @@ func (r *ReconcileCBTConfig) reconcileCBTForAllPVCPages(ctx context.Context, nam
 			return 0, err
 		}
 		totalPVCsListed += len(pvcList.Items)
+		if err := r.resolveAttachedForPVNamesOnPage(ctx, &pvcList, attachedPVs); err != nil {
+			return 0, err
+		}
 		r.processCBTForPVCCandidatesInPage(ctx, &pvcList, params, attachedPVs)
 		if pvcList.Continue == "" {
 			break
@@ -236,6 +261,42 @@ func (r *ReconcileCBTConfig) reconcileCBTForAllPVCPages(ctx context.Context, nam
 		listOpts.Continue = pvcList.Continue
 	}
 	return totalPVCsListed, nil
+}
+
+func boundPVNamesFromPVCPage(pvcList *v1.PersistentVolumeClaimList) []string {
+	seen := make(map[string]struct{}, len(pvcList.Items))
+	for i := range pvcList.Items {
+		n := pvcList.Items[i].Spec.VolumeName
+		if n == "" {
+			continue
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	return out
+}
+
+func (r *ReconcileCBTConfig) resolveAttachedForPVNamesOnPage(ctx context.Context, pvcList *v1.PersistentVolumeClaimList,
+	attachedPVsMemo map[string]bool) error {
+	log := logger.GetLogger(ctx)
+	for _, pvName := range boundPVNamesFromPVCPage(pvcList) {
+		if _, done := attachedPVsMemo[pvName]; done {
+			continue
+		}
+		var vaList storagev1.VolumeAttachmentList
+		if err := r.client.List(ctx, &vaList, client.MatchingFields{volumeAttachmentByPVNameField: pvName}); err != nil {
+			log.Errorf("Failed to list VolumeAttachments for PV %q. Err: %+v", pvName, err)
+			return err
+		}
+		attachedPVsMemo[pvName] = len(vaList.Items) > 0
+	}
+	return nil
 }
 
 func (r *ReconcileCBTConfig) processCBTForPVCCandidatesInPage(ctx context.Context, pvcList *v1.PersistentVolumeClaimList,
@@ -330,29 +391,4 @@ func (r *ReconcileCBTConfig) tryApplyCBTAndLabelForPVC(ctx context.Context, pvc 
 			log.Errorf("Failed to remove label cbt=true from PVC %s. Err: %+v", pvc.Name, err)
 		}
 	}
-}
-
-// getAttachedPVs returns PV names that have an active VolumeAttachment (cluster-scoped list, paged).
-func (r *ReconcileCBTConfig) getAttachedPVs(ctx context.Context) (map[string]bool, error) {
-	log := logger.GetLogger(ctx)
-	attachedPVs := make(map[string]bool)
-	listOpts := &client.ListOptions{Limit: cbtConfigListPageSize}
-	for {
-		var vaList storagev1.VolumeAttachmentList
-		if err := r.client.List(ctx, &vaList, listOpts); err != nil {
-			log.Errorf("Failed to list VolumeAttachments. Err: %+v", err)
-			return nil, err
-		}
-		for i := range vaList.Items {
-			va := &vaList.Items[i]
-			if va.Spec.Source.PersistentVolumeName != nil {
-				attachedPVs[*va.Spec.Source.PersistentVolumeName] = true
-			}
-		}
-		if vaList.Continue == "" {
-			break
-		}
-		listOpts.Continue = vaList.Continue
-	}
-	return attachedPVs, nil
 }
