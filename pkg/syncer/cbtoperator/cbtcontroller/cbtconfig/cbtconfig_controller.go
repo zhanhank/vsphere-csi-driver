@@ -41,10 +41,18 @@ import (
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/cns-lib/volume"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/csi/service/common"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/csi/service/logger"
+	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/syncer/cnsoperator/util"
 )
 
 const (
-	maxWorkerThreads = 10
+	// Reconcile: concurrent CBTConfig reconciles (controller MaxConcurrentReconciles).
+	workerThreadsReconcileEnvVar     = "WORKER_THREADS_CBT_CONFIG"
+	defaultMaxReconcileWorkerThreads = 10
+	// Volume CBT ops: concurrent SetVolumeCbtFlagsUtil / ClearVolumeCbtFlagsUtil calls per PVC page.
+	workerThreadsVolumeCbtOpsEnvVar    = "WORKER_THREADS_CBT_VOLUME_OPS"
+	defaultMaxVolumeCbtOpWorkerThreads = 5
+
+	capvVmLabelKey = "capv.vmware.com"
 	// cbtConfigListPageSize caps list responses per apiserver call (namespaced PVCs and cluster VolumeAttachments).
 	cbtConfigListPageSize int64 = 500
 )
@@ -90,25 +98,32 @@ func cbtStatusReportsEnabled(st cnsdpv1alpha1.CBTConfigStatus) bool {
 
 // Add creates a new CBTConfig controller and adds it to the Manager.
 func Add(mgr manager.Manager, clusterFlavor cnstypes.CnsClusterFlavor, volumeManager volume.Manager) error {
-	_, log := logger.GetNewContextWithLogger()
+	ctx, log := logger.GetNewContextWithLogger()
 	if clusterFlavor != cnstypes.CnsClusterFlavorWorkload {
 		log.Debug("Not initializing the CBTConfig controller as its a non-WCP CSI deployment")
 		return nil
 	}
-	return add(mgr, newReconciler(mgr, volumeManager))
+	maxReconcile := util.GetMaxWorkerThreads(ctx, workerThreadsReconcileEnvVar, defaultMaxReconcileWorkerThreads)
+	maxVolCbtOps := util.GetMaxWorkerThreads(ctx, workerThreadsVolumeCbtOpsEnvVar, defaultMaxVolumeCbtOpWorkerThreads)
+	rec := newReconciler(mgr, volumeManager, maxReconcile, maxVolCbtOps)
+	return add(mgr, rec)
 }
 
-// newReconciler returns a new reconcile.Reconciler
-func newReconciler(mgr manager.Manager, volumeManager volume.Manager) reconcile.Reconciler {
-	return &ReconcileCBTConfig{client: mgr.GetClient(), scheme: mgr.GetScheme(), volumeManager: volumeManager}
+// newReconciler returns a configured CBTConfig reconciler (also implements reconcile.Reconciler).
+func newReconciler(mgr manager.Manager, volumeManager volume.Manager, maxReconcileWorkerThreads, maxVolumeCbtOpWorkerThreads int) *ReconcileCBTConfig {
+	return &ReconcileCBTConfig{
+		client: mgr.GetClient(), scheme: mgr.GetScheme(), volumeManager: volumeManager,
+		maxReconcileWorkerThreads:   maxReconcileWorkerThreads,
+		maxVolumeCbtOpWorkerThreads: maxVolumeCbtOpWorkerThreads,
+	}
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler.
-func add(mgr manager.Manager, r reconcile.Reconciler) error {
+func add(mgr manager.Manager, r *ReconcileCBTConfig) error {
 	_, log := logger.GetNewContextWithLogger()
-	// Create a new controller.
+	// Create a new controller; concurrent reconciles come from the reconciler (WORKER_THREADS_CBT_CONFIG).
 	c, err := controller.New("cbtconfig-controller", mgr,
-		controller.Options{Reconciler: r, MaxConcurrentReconciles: maxWorkerThreads})
+		controller.Options{Reconciler: r, MaxConcurrentReconciles: r.maxReconcileWorkerThreads})
 	if err != nil {
 		log.Errorf("failed to create new CBTConfig controller with error: %+v", err)
 		return err
@@ -143,10 +158,14 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 // ReconcileCBTConfig reconciles a CBTConfig object.
 type ReconcileCBTConfig struct {
-	client        client.Client
-	scheme        *runtime.Scheme
-	volumeManager volume.Manager
+	client                      client.Client
+	scheme                      *runtime.Scheme
+	volumeManager               volume.Manager
+	maxReconcileWorkerThreads   int
+	maxVolumeCbtOpWorkerThreads int
 }
+
+var _ reconcile.Reconciler = &ReconcileCBTConfig{}
 
 // Reconcile reads that state of the cluster for a CBTConfig object and makes changes.
 func (r *ReconcileCBTConfig) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
@@ -221,8 +240,8 @@ func (r *ReconcileCBTConfig) reconcileCBTForAllPVCPages(ctx context.Context, nam
 
 func (r *ReconcileCBTConfig) processCBTForPVCCandidatesInPage(ctx context.Context, pvcList *v1.PersistentVolumeClaimList,
 	params *cbtPVCReconcileParams, attachedPVs map[string]bool) {
-	// Limit concurrent CBT volume operations (SetVolumeCbtFlagsUtil etc.) to maxWorkerThreads.
-	sem := make(chan struct{}, maxWorkerThreads)
+	// Limit concurrent CBT volume operations (SetVolumeCbtFlagsUtil etc.); separate from reconcile concurrency.
+	sem := make(chan struct{}, r.maxVolumeCbtOpWorkerThreads)
 	var wg sync.WaitGroup
 	for i := range pvcList.Items {
 		pvc := &pvcList.Items[i]
@@ -248,6 +267,14 @@ func (r *ReconcileCBTConfig) pvcShouldBeConsideredForCBT(ctx context.Context, pv
 	if attachedPVs[pvc.Spec.VolumeName] {
 		log.Debugf("PVC %s is attached to PodVM", pvc.Name)
 		return false
+	}
+	for key := range pvc.Labels {
+		// Seems unnecessary to check for CAPV/TKG labels here since the PVC label selector should already filter them out.
+		// TODO: confirm if this is necessary.
+		if strings.Contains(key, capvVmLabelKey) {
+			log.Debugf("PVC %s has label key %s (CAPV/TKG); skipping CBT reconcile", pvc.Name, key)
+			return false
+		}
 	}
 	if pvc.Annotations != nil {
 		for key := range pvc.Annotations {
