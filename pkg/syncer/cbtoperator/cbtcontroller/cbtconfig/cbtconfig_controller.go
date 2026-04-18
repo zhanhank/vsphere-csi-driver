@@ -19,6 +19,7 @@ package cbtconfig
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	cnstypes "github.com/vmware/govmomi/cns/types"
@@ -220,13 +221,23 @@ func (r *ReconcileCBTConfig) reconcileCBTForAllPVCPages(ctx context.Context, nam
 
 func (r *ReconcileCBTConfig) processCBTForPVCCandidatesInPage(ctx context.Context, pvcList *v1.PersistentVolumeClaimList,
 	params *cbtPVCReconcileParams, attachedPVs map[string]bool) {
+	// Limit concurrent CBT volume operations (SetVolumeCbtFlagsUtil etc.) to maxWorkerThreads.
+	sem := make(chan struct{}, maxWorkerThreads)
+	var wg sync.WaitGroup
 	for i := range pvcList.Items {
 		pvc := &pvcList.Items[i]
 		if !r.pvcShouldBeConsideredForCBT(ctx, pvc, attachedPVs) {
 			continue
 		}
-		r.tryApplyCBTAndLabelForPVC(ctx, pvc, params)
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(pvc *v1.PersistentVolumeClaim) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			r.tryApplyCBTAndLabelForPVC(ctx, pvc, params)
+		}(pvc)
 	}
+	wg.Wait()
 }
 
 func (r *ReconcileCBTConfig) pvcShouldBeConsideredForCBT(ctx context.Context, pvc *v1.PersistentVolumeClaim, attachedPVs map[string]bool) bool {
