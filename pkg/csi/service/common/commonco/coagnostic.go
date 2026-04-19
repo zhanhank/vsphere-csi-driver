@@ -128,6 +128,10 @@ type COCommonInterface interface {
 	GetPvcObjectByName(ctx context.Context, pvcName string, namespace string) (*v1.PersistentVolumeClaim, error)
 	HandleLateEnablementOfCapability(ctx context.Context, clusterFlavor cnstypes.CnsClusterFlavor, capability,
 		gcPort, gcEndpoint string)
+	// IsCBTConfigCRDRegistered returns whether the CBTConfig CustomResourceDefinition is installed on the cluster.
+	IsCBTConfigCRDRegistered(ctx context.Context, clusterFlavor cnstypes.CnsClusterFlavor) (bool, error)
+	// HandleLateEnablementOfCBTSupport polls until the CBTConfig CRD is installed, then restarts the container.
+	HandleLateEnablementOfCBTSupport(ctx context.Context, clusterFlavor cnstypes.CnsClusterFlavor)
 	// GetPVCNamespacedNameByUID returns the PVC's namespaced name (namespace/name) for the given UID.
 	// If the PVC is not found in the cache, it returns an empty string and false.
 	GetPVCNamespacedNameByUID(uid string) (k8stypes.NamespacedName, bool)

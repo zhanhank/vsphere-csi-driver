@@ -305,6 +305,15 @@ func (c *FakeK8SOrchestrator) HandleLateEnablementOfCapability(
 	panic("implement me")
 }
 
+func (c *FakeK8SOrchestrator) IsCBTConfigCRDRegistered(ctx context.Context,
+	clusterFlavor cnstypes.CnsClusterFlavor) (bool, error) {
+	return true, nil
+}
+
+func (c *FakeK8SOrchestrator) HandleLateEnablementOfCBTSupport(ctx context.Context,
+	clusterFlavor cnstypes.CnsClusterFlavor) {
+}
+
 // GetNodeTopologyLabels fetches the topology information of a node from the CSINodeTopology CR.
 func (nodeTopology *mockNodeVolumeTopology) GetNodeTopologyLabels(ctx context.Context, info *commoncotypes.NodeInfo) (
 	map[string]string, error) {

@@ -424,6 +424,18 @@ func initSyncerComponents(ctx context.Context, clusterFlavor cnstypes.CnsCluster
 						cleanupSessions(ctx, r)
 					}
 				}()
+				// TODO: remove this once CBTConfig CRD is installed by default
+				registered, err := commonco.ContainerOrchestratorUtility.IsCBTConfigCRDRegistered(ctx, clusterFlavor)
+				if err != nil {
+					log.Errorf("Error checking CBTConfig CRD. Error: %+v", err)
+					utils.LogoutAllvCenterSessions(ctx)
+					os.Exit(0)
+				}
+				if !registered {
+					log.Infof("CBTConfig CRD is not installed yet; polling every 2 minutes until it is registered, then the pod will restart.")
+					commonco.ContainerOrchestratorUtility.HandleLateEnablementOfCBTSupport(ctx, clusterFlavor)
+					return
+				}
 				if err := startCbtOperator(ctx, clusterFlavor, configInfo); err != nil {
 					log.Errorf("Error initializing CBT Operator. Error: %+v", err)
 					utils.LogoutAllvCenterSessions(ctx)

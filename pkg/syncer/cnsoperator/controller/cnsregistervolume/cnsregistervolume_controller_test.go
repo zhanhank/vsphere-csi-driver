@@ -272,6 +272,15 @@ func (m *mockCOCommon) HandleLateEnablementOfCapability(ctx context.Context,
 	panic("implement me")
 }
 
+func (m *mockCOCommon) IsCBTConfigCRDRegistered(ctx context.Context,
+	clusterFlavor cnstypes.CnsClusterFlavor) (bool, error) {
+	return true, nil
+}
+
+func (m *mockCOCommon) HandleLateEnablementOfCBTSupport(ctx context.Context,
+	clusterFlavor cnstypes.CnsClusterFlavor) {
+}
+
 func (m *mockCOCommon) IsFSSEnabled(ctx context.Context, featureName string) bool {
 	return true
 }

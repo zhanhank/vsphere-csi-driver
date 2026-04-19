@@ -270,6 +270,17 @@ func (m *MockCOCommonInterface) HandleLateEnablementOfCapability(ctx context.Con
 	m.Called(ctx, clusterFlavor, capability, gcPort, gcEndpoint)
 }
 
+func (m *MockCOCommonInterface) IsCBTConfigCRDRegistered(ctx context.Context,
+	clusterFlavor cnstypes.CnsClusterFlavor) (bool, error) {
+	args := m.Called(ctx, clusterFlavor)
+	return args.Bool(0), args.Error(1)
+}
+
+func (m *MockCOCommonInterface) HandleLateEnablementOfCBTSupport(ctx context.Context,
+	clusterFlavor cnstypes.CnsClusterFlavor) {
+	m.Called(ctx, clusterFlavor)
+}
+
 // MockCryptoClient is a mock implementation of crypto.Client
 type MockCryptoClient struct {
 	mock.Mock

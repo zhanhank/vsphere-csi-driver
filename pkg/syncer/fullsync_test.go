@@ -723,6 +723,15 @@ func (m *mockCOCommonForFullSync) HandleLateEnablementOfCapability(
 	// No-op for mock
 }
 
+func (m *mockCOCommonForFullSync) IsCBTConfigCRDRegistered(ctx context.Context,
+	clusterFlavor cnstypes.CnsClusterFlavor) (bool, error) {
+	return true, nil
+}
+
+func (m *mockCOCommonForFullSync) HandleLateEnablementOfCBTSupport(ctx context.Context,
+	clusterFlavor cnstypes.CnsClusterFlavor) {
+}
+
 // mockVolumeManagerForFullSync implements volumes.Manager for testing.
 // cnsVolumes holds a pre-built index of VolumeId.Id -> CnsVolume so that
 // QueryAllVolume and QueryVolumeAsync can return realistic results without

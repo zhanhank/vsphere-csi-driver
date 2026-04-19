@@ -68,6 +68,10 @@ import (
 
 const informerCreateRetryInterval = 5 * time.Minute
 
+// cbtConfigCRDName is the cluster-scoped name of the CBTConfig CustomResourceDefinition
+// (plural.group, matching cnsdp.vmware.com / cbtconfigs).
+const cbtConfigCRDName = "cbtconfigs.cnsdp.vmware.com"
+
 // operationModeWebHookServer indicates container running as webhook server
 const operationModeWebHookServer = "WEBHOOK_SERVER"
 
@@ -1261,6 +1265,63 @@ func (c *K8sOrchestrator) HandleLateEnablementOfCapability(ctx context.Context,
 				log.Infof("Successfully updated CNS-CSI FSS: %q to true", common.WorkloadDomainIsolationFSS)
 			}
 			os.Exit(1)
+		}
+	}
+}
+
+// IsCBTConfigCRDRegistered reports whether the CBTConfig CRD is registered on the API server.
+func (c *K8sOrchestrator) IsCBTConfigCRDRegistered(ctx context.Context,
+	clusterFlavor cnstypes.CnsClusterFlavor) (bool, error) {
+	if clusterFlavor != cnstypes.CnsClusterFlavorWorkload {
+		return false, nil
+	}
+	restClientConfig, err := clientconfig.GetConfig()
+	if err != nil {
+		return false, err
+	}
+	apiextensionsClientSet, err := apiextensionsclientset.NewForConfig(restClientConfig)
+	if err != nil {
+		return false, err
+	}
+	_, err = apiextensionsClientSet.ApiextensionsV1().CustomResourceDefinitions().Get(ctx,
+		cbtConfigCRDName, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to check if CBTConfig CRD is registered. Err: %w", err)
+	}
+	return true, nil
+}
+
+// HandleLateEnablementOfCBTSupport starts a ticker and checks every 2 minutes whether the CBTConfig
+// CRD is registered. When it becomes available, the container exits so the pod can restart and
+// initialize the CBT operator (same pattern as HandleLateEnablementOfCapability).
+func (c *K8sOrchestrator) HandleLateEnablementOfCBTSupport(ctx context.Context,
+	clusterFlavor cnstypes.CnsClusterFlavor) {
+	log := logger.GetLogger(ctx)
+	if clusterFlavor != cnstypes.CnsClusterFlavorWorkload {
+		return
+	}
+	log.Infof("Starting a routine to handle late installation of CBTConfig CRD")
+	ticker := time.NewTicker(time.Duration(2) * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Infof("Stopped checking for CBTConfig CRD: context cancelled")
+			return
+		case <-ticker.C:
+			registered, err := c.IsCBTConfigCRDRegistered(ctx, clusterFlavor)
+			if err != nil {
+				log.Errorf("failed to check if CBTConfig CRD is registered. Err: %+v", err)
+				os.Exit(1)
+			}
+			if registered {
+				log.Infof("CBTConfig CRD is now registered. Restarting the container to initialize CBT operator.")
+				os.Exit(0)
+			}
+			log.Debugf("CBTConfig CRD is not registered yet.")
 		}
 	}
 }
