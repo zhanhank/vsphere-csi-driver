@@ -432,7 +432,6 @@ func initSyncerComponents(ctx context.Context, clusterFlavor cnstypes.CnsCluster
 					os.Exit(0)
 				}
 				if !registered {
-					log.Infof("CBTConfig CRD is not installed yet; polling every 2 minutes until it is registered, then the pod will restart.")
 					commonco.ContainerOrchestratorUtility.HandleLateEnablementOfCBTSupport(ctx, clusterFlavor)
 					return
 				}
