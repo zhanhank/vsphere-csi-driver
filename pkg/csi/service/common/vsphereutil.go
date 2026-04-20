@@ -1385,3 +1385,40 @@ func createCryptoSpec(oldKeyID, newKeyID *vim25types.CryptoKeyId) vim25types.Bas
 
 	return &vim25types.CryptoSpecShallowRecrypt{NewKeyId: *newKeyID}
 }
+
+// VolumeChangedBlockTrackingEnabled reports whether CNS has changed-block tracking
+// enabled for the volume. It returns an error when QueryVolume fails or returns
+// no matching volume.
+func VolumeChangedBlockTrackingEnabled(ctx context.Context,
+	volumeManager cnsvolume.Manager, volumeID string) (bool, error) {
+	queryRes, err := volumeManager.QueryVolume(ctx, cnstypes.CnsQueryFilter{
+		VolumeIds: []cnstypes.CnsVolumeId{{Id: volumeID}},
+	})
+	if err != nil {
+		return false, err
+	}
+	if len(queryRes.Volumes) == 0 {
+		return false, fmt.Errorf("no CNS volume returned for volume ID %q", volumeID)
+	}
+	return queryRes.Volumes[0].ChangedBlockTracking == cnstypes.CnsVolumeCBTStatusEnabled, nil
+}
+
+// SetVolumeCbtFlagsUtil is the helper function to set CBT flags for the given volume.
+func SetVolumeCbtFlagsUtil(ctx context.Context, volumeManager cnsvolume.Manager, volumeID string) error {
+	err := volumeManager.SetVolumeControlFlags(ctx, volumeID,
+		[]string{string(cnstypes.CnsVolumeControlFlagsEnableChangedBlockTracking)})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// ClearVolumeCbtFlagsUtil is the helper function to clear CBT flags for the given volume.
+func ClearVolumeCbtFlagsUtil(ctx context.Context, volumeManager cnsvolume.Manager, volumeID string) error {
+	err := volumeManager.ClearVolumeControlFlags(ctx, volumeID,
+		[]string{string(cnstypes.CnsVolumeControlFlagsEnableChangedBlockTracking)})
+	if err != nil {
+		return err
+	}
+	return nil
+}

@@ -87,6 +87,8 @@ var (
 	isPodVMOnStretchSupervisorFSSEnabled bool
 	// IsMultipleClustersPerVsphereZoneFSSEnabled is true when supports_multiple_clusters_per_zone FSS is enabled.
 	IsMultipleClustersPerVsphereZoneFSSEnabled bool
+	// isCSIBackupAPIEnabled is true when supports_CSI_Backup_API FSS is enabled.
+	isCSIBackupAPIEnabled bool
 )
 
 var getCandidateDatastores = cnsvsphere.GetCandidateDatastoresInCluster
@@ -198,6 +200,14 @@ func (c *controller) Init(config *cnsconfig.Config, version string) error {
 	if !commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.VsanFileVolumeService) {
 		go commonco.ContainerOrchestratorUtility.HandleLateEnablementOfCapability(ctx, cnstypes.CnsClusterFlavorWorkload,
 			common.VsanFileVolumeService, "", "")
+	}
+	isCSIBackupAPIEnabled = commonco.ContainerOrchestratorUtility.IsFSSEnabled(ctx, common.CSI_Backup_API)
+	if !isCSIBackupAPIEnabled {
+		log.Info("CSI Backup API feature flag is disabled. Handling late enablement.")
+		go commonco.ContainerOrchestratorUtility.HandleLateEnablementOfCapability(ctx, cnstypes.CnsClusterFlavorWorkload,
+			common.CSI_Backup_API, "", "")
+	} else {
+		log.Info("CSI Backup API feature flag is enabled.")
 	}
 	if idempotencyHandlingEnabled {
 		log.Info("CSI Volume manager idempotency handling feature flag is enabled.")
@@ -1139,6 +1149,23 @@ func (c *controller) createBlockVolume(ctx context.Context, req *csi.CreateVolum
 		}
 	}
 
+	if isCSIBackupAPIEnabled {
+		if pvcNamespace, ok := req.Parameters[common.AttributePvcNamespace]; ok && pvcNamespace != "" {
+			enableCbt, err := common.IsCBTEnabledForNamespace(ctx, pvcNamespace)
+			if err != nil {
+				log.Warnf("failed to get enable CBT for namespace %s with error %+v", pvcNamespace, err)
+			} else if enableCbt {
+				err = common.SetVolumeCbtFlagsUtil(ctx, c.manager.VolumeManager, volumeInfo.VolumeID.Id)
+				if err != nil {
+					log.Warnf("failed to set CBT flags for volume %s with error %+v", volumeInfo.VolumeID.Id, err)
+				}
+			}
+		} else {
+			log.Warnf("failed to set CBT flag for volume %s due to missing PVC namespace from request parameters",
+				volumeInfo.VolumeID.Id)
+		}
+	}
+
 	return resp, "", nil
 }
 
@@ -1918,6 +1945,30 @@ func (c *controller) ControllerPublishVolume(ctx context.Context, req *csi.Contr
 				"volumeAttachment %v already has the attached status as true. "+
 					"Assuming the attach volume is due to incorrect force sync Attach from CSI Attacher",
 				volumeAttachment)
+		}
+
+		isBlockRequest := !isFileVolumeRequestInWcp(ctx, []*csi.VolumeCapability{req.GetVolumeCapability()})
+		if isCSIBackupAPIEnabled && isBlockRequest {
+			_, pvcNamespace, ok := commonco.ContainerOrchestratorUtility.GetPVCNameFromCSIVolumeID(req.VolumeId)
+			if ok && pvcNamespace != "" {
+				nsEnableCbt, nsErr := common.IsCBTEnabledForNamespace(ctx, pvcNamespace)
+				if nsErr != nil {
+					log.Warnf("failed to get CBTConfig for namespace %s with error %+v", pvcNamespace, nsErr)
+				}
+				if nsEnableCbt {
+					volEnableCbt, qErr := common.VolumeChangedBlockTrackingEnabled(ctx, c.manager.VolumeManager, req.VolumeId)
+					if qErr != nil {
+						log.Warnf("failed to query CBT status for volume %s with error %+v", req.VolumeId, qErr)
+					}
+					if volEnableCbt {
+						log.Debugf("volume %s already has CBT enabled", req.VolumeId)
+					} else {
+						if setErr := common.SetVolumeCbtFlagsUtil(ctx, c.manager.VolumeManager, req.VolumeId); setErr != nil {
+							log.Warnf("skipped set CBT flags error %+v for volume %s", setErr, req.VolumeId)
+						}
+					}
+				}
+			}
 		}
 
 		vmuuid, err := getPodVMUUID(ctx, req.VolumeId, req.NodeId)
