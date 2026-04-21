@@ -1405,28 +1405,20 @@ func VolumeChangedBlockTrackingEnabled(ctx context.Context,
 
 // SetVolumeCbtFlagsUtil is the helper function to set CBT flags for the given volume.
 func SetVolumeCbtFlagsUtil(ctx context.Context, volumeManager cnsvolume.Manager, volumeID string) error {
-	log := logger.GetLogger(ctx)
-	log.Debugf("vSphere CSI driver is setting CBT flags for volume: %s", volumeID)
 	err := volumeManager.SetVolumeControlFlags(ctx, volumeID,
 		[]string{string(cnstypes.CnsVolumeControlFlagsEnableChangedBlockTracking)})
 	if err != nil {
-		log.Errorf("failed to set CBT flags for volume %s with error %+v", volumeID, err)
 		return err
 	}
-	log.Debugf("Successfully set CBT flags for volume: %s", volumeID)
 	return nil
 }
 
 // ClearVolumeCbtFlagsUtil is the helper function to clear CBT flags for the given volume.
 func ClearVolumeCbtFlagsUtil(ctx context.Context, volumeManager cnsvolume.Manager, volumeID string) error {
-	log := logger.GetLogger(ctx)
-	log.Debugf("vSphere CSI driver is clearing CBT flags for volume: %s", volumeID)
 	err := volumeManager.ClearVolumeControlFlags(ctx, volumeID,
 		[]string{string(cnstypes.CnsVolumeControlFlagsEnableChangedBlockTracking)})
 	if err != nil {
-		log.Errorf("failed to clear CBT flags for volume %s with error %+v", volumeID, err)
 		return err
 	}
-	log.Debugf("Successfully cleared CBT flags for volume: %s", volumeID)
 	return nil
 }
