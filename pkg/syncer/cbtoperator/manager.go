@@ -25,7 +25,7 @@ import (
 	ctrlmgr "sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	cnsdpv1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsdp/v1alpha1"
+	cbtconfigv1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cbtconfig/v1alpha1"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/cns-lib/volume"
 	cnsvsphere "sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/cns-lib/vsphere"
 	cnsconfig "sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/config"
@@ -59,8 +59,8 @@ func NewManager(
 	log.Info("Registering Components for CBT Operator")
 
 	// Setup Scheme for all resources
-	if err := cnsdpv1alpha1.AddToScheme(mgr.GetScheme()); err != nil {
-		return nil, fmt.Errorf("failed to set scheme for CBT operator for type %s. Err: %+v", cnsdpv1alpha1.GroupVersion.String(), err)
+	if err := cbtconfigv1alpha1.AddToScheme(mgr.GetScheme()); err != nil {
+		return nil, fmt.Errorf("failed to set scheme for CBT operator for type %s. Err: %+v", cbtconfigv1alpha1.GroupVersion.String(), err)
 	}
 
 	vcClient, err := cnsvsphere.GetVirtualCenterInstance(ctx, configInfo, false)

@@ -37,7 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	cnsdpv1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cnsdp/v1alpha1"
+	cbtconfigv1alpha1 "sigs.k8s.io/vsphere-csi-driver/v3/pkg/apis/cbtconfig/v1alpha1"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/common/cns-lib/volume"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/csi/service/common"
 	"sigs.k8s.io/vsphere-csi-driver/v3/pkg/csi/service/logger"
@@ -95,7 +95,7 @@ func newCBTPVCReconcileParams(enable bool) (*cbtPVCReconcileParams, error) {
 	return p, nil
 }
 
-func cbtStatusReportsEnabled(st cnsdpv1alpha1.CBTConfigStatus) bool {
+func cbtStatusReportsEnabled(st cbtconfigv1alpha1.CBTConfigStatus) bool {
 	return st.Enabled != nil && *st.Enabled
 }
 
@@ -152,14 +152,14 @@ func add(mgr manager.Manager, r *ReconcileCBTConfig) error {
 		return err
 	}
 
-	pred := predicate.TypedFuncs[*cnsdpv1alpha1.CBTConfig]{
-		CreateFunc: func(e event.TypedCreateEvent[*cnsdpv1alpha1.CBTConfig]) bool {
+	pred := predicate.TypedFuncs[*cbtconfigv1alpha1.CBTConfig]{
+		CreateFunc: func(e event.TypedCreateEvent[*cbtconfigv1alpha1.CBTConfig]) bool {
 			return cbtStatusReportsEnabled(e.Object.Status)
 		},
-		UpdateFunc: func(e event.TypedUpdateEvent[*cnsdpv1alpha1.CBTConfig]) bool {
+		UpdateFunc: func(e event.TypedUpdateEvent[*cbtconfigv1alpha1.CBTConfig]) bool {
 			return cbtStatusReportsEnabled(e.ObjectOld.Status) != cbtStatusReportsEnabled(e.ObjectNew.Status)
 		},
-		DeleteFunc: func(e event.TypedDeleteEvent[*cnsdpv1alpha1.CBTConfig]) bool {
+		DeleteFunc: func(e event.TypedDeleteEvent[*cbtconfigv1alpha1.CBTConfig]) bool {
 			return false
 		},
 	}
@@ -170,8 +170,8 @@ func add(mgr manager.Manager, r *ReconcileCBTConfig) error {
 	// or the manager context is cancelled, then attaches the informer handler.
 	err = c.Watch(source.Kind(
 		mgr.GetCache(),
-		&cnsdpv1alpha1.CBTConfig{},
-		&handler.TypedEnqueueRequestForObject[*cnsdpv1alpha1.CBTConfig]{}, pred))
+		&cbtconfigv1alpha1.CBTConfig{},
+		&handler.TypedEnqueueRequestForObject[*cbtconfigv1alpha1.CBTConfig]{}, pred))
 	if err != nil {
 		log.Errorf("failed to watch for changes to CBTConfig resource with error: %+v", err)
 		return err
@@ -196,7 +196,7 @@ func (r *ReconcileCBTConfig) Reconcile(ctx context.Context, request reconcile.Re
 	reconcileLog := logger.GetLogger(ctx)
 	reconcileLog.Infof("Received Reconcile for request: %q", request.NamespacedName)
 
-	instance := &cnsdpv1alpha1.CBTConfig{}
+	instance := &cbtconfigv1alpha1.CBTConfig{}
 	err := r.client.Get(ctx, request.NamespacedName, instance)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -217,7 +217,7 @@ func (r *ReconcileCBTConfig) Reconcile(ctx context.Context, request reconcile.Re
 // reconcileCBTForNamespace lists unattached vSphere block PVCs in the namespace (by label
 // selector), sets or clears CBT on the backing volume, then adds or removes the cbt=true
 // PVC label so attached volumes are handled on a later reconcile.
-func (r *ReconcileCBTConfig) reconcileCBTForNamespace(ctx context.Context, instance *cnsdpv1alpha1.CBTConfig, enable bool) (reconcile.Result, error) {
+func (r *ReconcileCBTConfig) reconcileCBTForNamespace(ctx context.Context, instance *cbtconfigv1alpha1.CBTConfig, enable bool) (reconcile.Result, error) {
 	log := logger.GetLogger(ctx)
 	params, err := newCBTPVCReconcileParams(enable)
 	if err != nil {

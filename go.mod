@@ -149,5 +149,3 @@ replace (
 	k8s.io/sample-controller => k8s.io/sample-controller v0.35.0
 	sigs.k8s.io/controller-runtime => sigs.k8s.io/controller-runtime v0.19.1
 )
-
-replace github.com/vmware/govmomi => github.com/zhanhank/govmomi v0.0.0-20260414065950-774caabe3d34
