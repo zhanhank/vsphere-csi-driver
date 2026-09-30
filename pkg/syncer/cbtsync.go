@@ -445,8 +445,7 @@ func resolvePVCToVolumeID(ctx context.Context,
 	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != common.VSphereCSIDriverName {
 		return "", false
 	}
-	if pv.Spec.CSI.VolumeAttributes == nil ||
-		pv.Spec.CSI.VolumeAttributes[common.AttributeDiskType] != common.DiskTypeBlockVolume {
+	if IsFileVolume(pv) {
 		return "", false
 	}
 	if pv.Spec.CSI.VolumeHandle == "" {
